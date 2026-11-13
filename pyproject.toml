@@ -1,0 +1,18 @@
+[project]
+name = "ai-chat-for-comfyui"
+description = "Multimodal assistant, image generation and prompt tools for ComfyUI"
+version = "0.1.0"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+dependencies = [
+    "requests>=2.32.3,<3",
+    "openai>=1.55.0,<3",
+    "Pillow>=10.4,<13",
+    "regex>=2024.11.6,<2027",
+]
+
+[project.urls]
+Repository = "https://github.com/baize7815/ComfyUI-AI-Chat"
+
+[tool.comfy]
+DisplayName = "AI Chat for ComfyUI"

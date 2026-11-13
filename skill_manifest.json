@@ -1,0 +1,24 @@
+{
+  "3d-render": [
+    "SKILL.md"
+  ],
+  "cinematic-replica": [
+    "SKILL.md"
+  ],
+  "commercial-photo-remaster": [
+    "SKILL.md"
+  ],
+  "h3-ref2va-subject-replace": [
+    "SKILL.md",
+    "references/format-spec.md",
+    "references/pitfalls.md"
+  ],
+  "low-res-image": [
+    "SKILL.md"
+  ],
+  "nb-prompt": [
+    "SKILL.md",
+    "references/cheat_sheet.md",
+    "references/edit_rules.md"
+  ]
+}
