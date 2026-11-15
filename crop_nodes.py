@@ -55,15 +55,44 @@ def _read_json(text):
         value = json.loads(content)
     except json.JSONDecodeError:
         index = content.find("{")
-        if index < 0:
-            raise ValueError("未找到 JSON 对象，请让 AI 只输出 JSON。") from None
-        try:
-            value, _ = json.JSONDecoder().raw_decode(content[index:])
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"裁剪 JSON 无法解析：{exc.msg}") from exc
+        if index >= 0:
+            try:
+                value, _ = json.JSONDecoder().raw_decode(content[index:])
+            except json.JSONDecodeError:
+                value = _extract_bbox_by_regex(content)
+        else:
+            value = _extract_bbox_by_regex(content)
     if not isinstance(value, dict):
         raise ValueError("裁剪 JSON 必须是对象。")
     return value
+
+
+def _extract_bbox_by_regex(text):
+    """Conservative fallback for prose containing explicitly labelled bbox arrays.
+
+    Never treat an arbitrary list of four numbers as a location.
+    Dimensions are optional here because the AI Chat preset stamps actual ones.
+    """
+    number = r"-?\d+(?:\.\d+)?"
+    coordinate_pattern = re.compile(
+        rf'(?:\b(?:bbox|bounding_box)\b|裁剪坐标|区域坐标)\s*["\']?\s*[:：=]\s*'
+        rf'\[\s*({number})\s*,\s*({number})\s*,\s*({number})\s*,\s*({number})\s*\]',
+        re.I,
+    )
+    matches = coordinate_pattern.findall(text)
+    if not matches:
+        raise ValueError("没有检测到有效的 JSON 或标注的 bbox 坐标，请检查 AI 输出。")
+    data = {"regions": [{"bbox": [float(x) for x in values]} for values in matches]}
+    width = re.search(r'["\']?(?:image_width|source_width|图像宽度|图片宽度)["\']?\s*[:：=]\s*(\d+)', text, re.I)
+    height = re.search(r'["\']?(?:image_height|source_height|图像高度|图片高度)["\']?\s*[:：=]\s*(\d+)', text, re.I)
+    if width and height:
+        data["image_width"] = int(width.group(1))
+        data["image_height"] = int(height.group(1))
+    else:
+        resolution = re.search(r'(?:图片尺寸|图像尺寸|分辨率)\s*[:：=]\s*(\d+)\s*[×xX*]\s*(\d+)', text)
+        if resolution:
+            data["image_width"], data["image_height"] = map(int, resolution.groups())
+    return data
 
 
 def _source_size(data):
@@ -149,17 +178,29 @@ def _crop_batch(image, boxes, multiple, reference=None):
     }
     if reference is not None:
         data["ai_reference_width"], data["ai_reference_height"] = reference
-    return torch.stack(crops), torch.stack(cropped_masks), data
+    return torch.stack(crops), torch.stack(cropped_masks), data, _crop_preview(image, boxes)
 
 
-_MARGINS = {
-    "左侧扩展像素": ("INT", {"default": 16, "min": -4096, "max": 4096}),
-    "顶部扩展像素": ("INT", {"default": 16, "min": -4096, "max": 4096}),
-    "右侧扩展像素": ("INT", {"default": 16, "min": -4096, "max": 4096}),
-    "底部扩展像素": ("INT", {"default": 16, "min": -4096, "max": 4096}),
-}
-_OUTPUT_TYPES = ("IMAGE", "MASK", CROP_TYPE)
-_OUTPUT_NAMES = ("裁剪图像", "矩形遮罩", "裁剪数据")
+def _crop_preview(image, boxes):
+    """Render the real crop rectangle on the full-size original image."""
+    preview = image.clone()
+    _, height, width, _ = preview.shape
+    thickness = max(1, min(6, round(min(height, width) / 400)))
+    red = preview.new_tensor((1.0, 0.12, 0.12))
+    for i, box in enumerate(boxes):
+        x, y, w, h = (box[key] for key in ("x", "y", "width", "height"))
+        t = min(thickness, w, h)
+        x2, y2 = x + w, y + h
+        preview[i, y:y + t, x:x2, :3] = red
+        preview[i, y2 - t:y2, x:x2, :3] = red
+        preview[i, y:y2, x:x + t, :3] = red
+        preview[i, y:y2, x2 - t:x2, :3] = red
+    return preview
+
+
+_EXPANSION = {"裁剪扩展像素": ("INT", {"default": 16, "min": 0, "max": 4096})}
+_OUTPUT_TYPES = ("IMAGE", "MASK", CROP_TYPE, "IMAGE")
+_OUTPUT_NAMES = ("裁剪图像", "矩形遮罩", "裁剪数据", "裁剪框预览")
 
 
 class AIChatCropFromJSON:
@@ -167,20 +208,19 @@ class AIChatCropFromJSON:
     def INPUT_TYPES(cls):
         return {"required": {
             "原图像": ("IMAGE",),
-            "AI裁剪JSON": ("STRING", {"multiline": True, "forceInput": False}),
+            "AI裁剪JSON": ("STRING", {"forceInput": True}),
             "区域序号": ("INT", {"default": 0, "min": 0, "max": 999}),
             "对齐倍数": (ALIGNMENTS, {"default": "8"}),
-            **_MARGINS,
+            **_EXPANSION,
             "允许宽高比不同": ("BOOLEAN", {"default": False}),
         }}
 
     RETURN_TYPES, RETURN_NAMES = _OUTPUT_TYPES, _OUTPUT_NAMES
     FUNCTION = "crop"
-    CATEGORY = "AI Chat/局部裁剪"
+    CATEGORY = "🫧 AI Chat/局部裁剪"
     DESCRIPTION = "AI JSON 坐标按参考分辨率换算到 ComfyUI 原图，自动对齐和安全补边。"
 
-    def crop(self, 原图像, AI裁剪JSON, 区域序号, 对齐倍数, 左侧扩展像素,
-             顶部扩展像素, 右侧扩展像素, 底部扩展像素, 允许宽高比不同):
+    def crop(self, 原图像, AI裁剪JSON, 区域序号, 对齐倍数, 裁剪扩展像素, 允许宽高比不同):
         image = _image(原图像)
         obj = _read_json(AI裁剪JSON)
         src_w, src_h = _source_size(obj)
@@ -197,10 +237,10 @@ class AIChatCropFromJSON:
         x1, y1, x2, y2 = _xyxy(boxes[区域序号])
         sx, sy = w / src_w, h / src_h
         rect = _align_box(
-            math.floor(x1 * sx) - 左侧扩展像素,
-            math.floor(y1 * sy) - 顶部扩展像素,
-            math.ceil(x2 * sx) + 右侧扩展像素,
-            math.ceil(y2 * sy) + 底部扩展像素,
+            math.floor(x1 * sx) - 裁剪扩展像素,
+            math.floor(y1 * sy) - 裁剪扩展像素,
+            math.ceil(x2 * sx) + 裁剪扩展像素,
+            math.ceil(y2 * sy) + 裁剪扩展像素,
             w, h, 对齐倍数)
         return _crop_batch(image, [rect] * image.shape[0], 对齐倍数,
                            reference=(src_w, src_h))
@@ -214,16 +254,15 @@ class AIChatCropFromMask:
             "手绘遮罩": ("MASK",),
             "遮罩阈值": ("FLOAT", {"default": 0.01, "min": 0.0, "max": 1.0, "step": 0.01}),
             "对齐倍数": (ALIGNMENTS, {"default": "8"}),
-            **_MARGINS,
+            **_EXPANSION,
         }}
 
     RETURN_TYPES, RETURN_NAMES = _OUTPUT_TYPES, _OUTPUT_NAMES
     FUNCTION = "crop"
-    CATEGORY = "AI Chat/局部裁剪"
+    CATEGORY = "🫧 AI Chat/局部裁剪"
     DESCRIPTION = "手绘遮罩只用于定位，自动转成矩形裁剪和矩形遮罩。"
 
-    def crop(self, 原图像, 手绘遮罩, 遮罩阈值, 对齐倍数, 左侧扩展像素,
-             顶部扩展像素, 右侧扩展像素, 底部扩展像素):
+    def crop(self, 原图像, 手绘遮罩, 遮罩阈值, 对齐倍数, 裁剪扩展像素):
         image = _image(原图像)
         mask = _mask(手绘遮罩, image.shape[0])
         _, h, w, _ = image.shape
@@ -236,8 +275,8 @@ class AIChatCropFromMask:
                 raise ValueError("手绘遮罩为空，无法裁剪。")
             y1, x1 = active.min(dim=0).values.tolist()
             y2, x2 = (active.max(dim=0).values + 1).tolist()
-            boxes.append(_align_box(x1 - 左侧扩展像素, y1 - 顶部扩展像素,
-                                    x2 + 右侧扩展像素, y2 + 底部扩展像素,
+            boxes.append(_align_box(x1 - 裁剪扩展像素, y1 - 裁剪扩展像素,
+                                    x2 + 裁剪扩展像素, y2 + 裁剪扩展像素,
                                     w, h, 对齐倍数))
         return _crop_batch(image, boxes, 对齐倍数)
 
@@ -273,7 +312,7 @@ class AIChatPasteCrop:
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("合并图像",)
     FUNCTION = "paste"
-    CATEGORY = "AI Chat/局部裁剪"
+    CATEGORY = "🫧 AI Chat/局部裁剪"
     DESCRIPTION = "根据真实 BBOX 回贴；仅缩放图块，不缩放原图，自动剔除对齐补边。"
 
     def paste(self, 原图像, 编辑后图像, 裁剪数据, 边缘羽化像素):

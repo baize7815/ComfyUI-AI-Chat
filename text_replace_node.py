@@ -31,7 +31,7 @@ class 文本正则替换节点:
     RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("输出文本",)
     FUNCTION = "文本替换处理"
-    CATEGORY = "AI Chat/文本工具"
+    CATEGORY = "🫧 AI Chat/文本工具"
     DESCRIPTION = "按每行“查找|||替换”规则执行普通或带超时保护的正则替换。"
 
     def 文本替换处理(self, 替换规则, 替换模式, 输入文本=None):

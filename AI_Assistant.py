@@ -90,7 +90,7 @@ class 多模态AI助手节点:
     RETURN_NAMES = ("AI回复", "系统提示词", "AI回复列表", "视频分镜列表")
     OUTPUT_IS_LIST = (False, False, True, True)
     FUNCTION = "处理多模态请求"
-    CATEGORY = "AI Chat/文本与多模态"
+    CATEGORY = "🫧 AI Chat/文本与多模态"
     DESCRIPTION = "使用持久化服务商配置调用 OpenAI 兼容的文本或多模态模型。"
     SEARCH_ALIASES = ["AI助手", "多模态", "OpenAI兼容"]
 

@@ -21,16 +21,63 @@ def zeros(height=13, width=17, batch=1):
 
 def mask_crop(image, mask, align="8", edges=0):
     return AIChatCropFromMask().crop(
-        image, mask, 0.01, align, edges, edges, edges, edges)
+        image, mask, 0.01, align, edges)[:3]
 
 
 def json_crop(image, value, align="8", edges=0):
     return AIChatCropFromJSON().crop(
         image, json.dumps(value), 0, align,
-        edges, edges, edges, edges, False)
+        edges, False)[:3]
 
 
 class CropNodesTest(unittest.TestCase):
+    def test_regex_extraction_of_ai_text(self):
+        data = AI_Assistant.多模态AI助手节点.规范化裁剪回复(
+            '识别结果：bbox: [12, 20, 80, 99]，可以裁剪。', (1920, 1080))
+        parsed = json.loads(data)
+        self.assertEqual((parsed["image_width"], parsed["image_height"]), (1920, 1080))
+        self.assertEqual(parsed["regions"][0]["bbox"], [12.0, 20.0, 80.0, 99.0])
+        image = zeros(108, 192)
+        cropped = AIChatCropFromJSON().crop(image, data, 0, "2", 0, False)
+        self.assertEqual(cropped[2]["boxes"][0]["x"], 0)
+        self.assertGreater(cropped[2]["boxes"][0]["width"], 0)
+
+        with self.assertRaisesRegex(ValueError, "bbox"):
+            AI_Assistant.多模态AI助手节点.规范化裁剪回复(
+                '只有图片尺寸 1920x1080，没有区域坐标。', (1920, 1080))
+
+    def test_json_socket_and_preview(self):
+        field = AIChatCropFromJSON.INPUT_TYPES()["required"]["AI裁剪JSON"]
+        self.assertEqual(field[0], "STRING")
+        self.assertTrue(field[1]["forceInput"])
+        self.assertEqual(AIChatCropFromMask.RETURN_TYPES, AIChatCropFromJSON.RETURN_TYPES)
+        self.assertEqual(AIChatCropFromJSON.RETURN_NAMES[-1], "裁剪框预览")
+        image = zeros(25, 25)
+        data = {"image_width": 25, "image_height": 25,
+                "regions": [{"bbox": [8, 8, 10, 10]}]}
+        cropped, rect, metadata, preview = AIChatCropFromJSON().crop(
+            image, json.dumps(data), 0, "2", 0, False)
+        self.assertEqual(tuple(preview.shape), tuple(image.shape))
+        box = metadata["boxes"][0]
+        self.assertEqual(preview[0, box["y"], box["x"], 0].item(), 1.0)
+        self.assertTrue(torch.equal(preview[0, 0, 0], image[0, 0, 0]))
+        self.assertEqual(tuple(cropped.shape[1:3]), tuple(rect.shape[1:]))
+
+    def test_single_extension_value_applies_to_all_four_sides(self):
+        image = zeros(25, 25)
+        mask = torch.zeros((1, 25, 25))
+        mask[0, 8:10, 8:10] = 1
+        _, _, before = mask_crop(image, mask, align="2", edges=0)
+        _, _, after = mask_crop(image, mask, align="2", edges=2)
+        a, b = before["boxes"][0], after["boxes"][0]
+        self.assertEqual((a["x"] - b["x"], a["y"] - b["y"]), (2, 2))
+        self.assertEqual((b["width"] - a["width"], b["height"] - a["height"]), (4, 4))
+
+        data = {"image_width": 25, "image_height": 25,
+                "regions": [{"bbox": [8, 8, 10, 10]}]}
+        _, _, boxed = json_crop(image, data, align="2", edges=2)
+        self.assertEqual(boxed["boxes"][0], b)
+
     def test_scaled_reference_coordinates(self):
         image = zeros(1125, 2001)
         _, crop_mask, data = json_crop(image, {
