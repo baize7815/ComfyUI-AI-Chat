@@ -101,7 +101,7 @@ class kontextPreset:
     RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("提示词",)
     FUNCTION = "get_preset"
-    CATEGORY = "🫧 AI Chat/提示词预设"
+    CATEGORY = "🫧 AI Chat"
     DESCRIPTION = "输出适用于 Flux Kontext 的图像编辑提示词预设。"
 
     @classmethod

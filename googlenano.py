@@ -109,7 +109,7 @@ def _decode_generated_images(response: Any, api_mode: str) -> list[Image.Image]:
 class GoogleNanoNode:
     """通过可配置的 OpenAI 兼容服务生成或编辑图像。"""
 
-    CATEGORY = "🫧 AI Chat/图像生成"
+    CATEGORY = "🫧 AI Chat"
     FUNCTION = "generate"
     RETURN_TYPES = ("IMAGE", "STRING")
     RETURN_NAMES = ("图像", "状态")

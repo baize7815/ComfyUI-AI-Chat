@@ -201,6 +201,41 @@ def _crop_preview(image, boxes):
 _EXPANSION = {"裁剪扩展像素": ("INT", {"default": 16, "min": 0, "max": 4096})}
 _OUTPUT_TYPES = ("IMAGE", "MASK", CROP_TYPE, "IMAGE")
 _OUTPUT_NAMES = ("裁剪图像", "矩形遮罩", "裁剪数据", "裁剪框预览")
+_PREVIEW_MODES = ["裁剪结果", "原图标框", "关闭"]
+
+
+def _validate_alignment(value):
+    if str(value) not in ALIGNMENTS:
+        raise ValueError("对齐倍数无效，请从 2/4/8/16/32/64 选择；旧工作流建议重建节点。")
+    return str(value)
+
+
+def _emit_crops(image, indexed_boxes, alignment, preview_mode, reference=None):
+    """Return one list item per independent crop with matching metadata."""
+    if not indexed_boxes:
+        raise ValueError("没有可以裁剪的区域。")
+    if preview_mode not in _PREVIEW_MODES:
+        raise ValueError("图像预览选项无效。")
+    crops, masks, records, previews = [], [], [], []
+    for source_idx, box in indexed_boxes:
+        crop, mask, record, preview = _crop_batch(
+            image[source_idx:source_idx + 1], [box], alignment, reference=reference)
+        record["source_batch_index"] = source_idx
+        record["source_batch_count"] = image.shape[0]
+        crops.append(crop)
+        masks.append(mask)
+        records.append(record)
+        previews.append(preview)
+    outputs = (crops, masks, records, previews)
+    if preview_mode == "关闭":
+        return {"result": outputs}
+    # Same built-in ComfyUI preview mechanism as Easy-Use, without an extra node.
+    from nodes import PreviewImage
+    presenter = PreviewImage()
+    images = []
+    for thumbnail in (crops if preview_mode == "裁剪结果" else previews):
+        images.extend(presenter.save_images(thumbnail, "AIChatCropPreview")["ui"]["images"])
+    return {"ui": {"images": images}, "result": outputs}
 
 
 class AIChatCropFromJSON:
@@ -209,19 +244,26 @@ class AIChatCropFromJSON:
         return {"required": {
             "原图像": ("IMAGE",),
             "AI裁剪JSON": ("STRING", {"forceInput": True}),
-            "区域序号": ("INT", {"default": 0, "min": 0, "max": 999}),
+            "区域序号": ("INT", {"default": 0, "min": -1, "max": 999, "tooltip": "-1：全部区域；0 起按序号选择单个区域。"}),
             "对齐倍数": (ALIGNMENTS, {"default": "8"}),
             **_EXPANSION,
             "允许宽高比不同": ("BOOLEAN", {"default": False}),
+            "图像预览": (_PREVIEW_MODES, {"default": "裁剪结果"}),
         }}
 
     RETURN_TYPES, RETURN_NAMES = _OUTPUT_TYPES, _OUTPUT_NAMES
+    OUTPUT_IS_LIST = (True, True, True, True)
+    OUTPUT_NODE = True
     FUNCTION = "crop"
-    CATEGORY = "🫧 AI Chat/局部裁剪"
+    CATEGORY = "🫧 AI Chat"
     DESCRIPTION = "AI JSON 坐标按参考分辨率换算到 ComfyUI 原图，自动对齐和安全补边。"
 
-    def crop(self, 原图像, AI裁剪JSON, 区域序号, 对齐倍数, 裁剪扩展像素, 允许宽高比不同):
+    def crop(self, 原图像, AI裁剪JSON, 区域序号, 对齐倍数, 裁剪扩展像素,
+             允许宽高比不同, 图像预览="裁剪结果"):
         image = _image(原图像)
+        alignment = _validate_alignment(对齐倍数)
+        if isinstance(区域序号, bool) or not isinstance(区域序号, int) or 区域序号 < -1:
+            raise ValueError("区域序号必须是整数（-1 为全部、0 起选择单区域）。旧节点出现 NaN 时请重建节点。")
         obj = _read_json(AI裁剪JSON)
         src_w, src_h = _source_size(obj)
         boxes = obj.get("regions", obj.get("boxes", obj.get("bboxes")))
@@ -234,15 +276,20 @@ class AIChatCropFromJSON:
         _, h, w, _ = image.shape
         if not 允许宽高比不同 and abs((w / h) / (src_w / src_h) - 1) > 0.02:
             raise ValueError("AI 参考图与 ComfyUI 原图宽高比相差超过 2%；请核对尺寸。")
-        x1, y1, x2, y2 = _xyxy(boxes[区域序号])
         sx, sy = w / src_w, h / src_h
-        rect = _align_box(
-            math.floor(x1 * sx) - 裁剪扩展像素,
-            math.floor(y1 * sy) - 裁剪扩展像素,
-            math.ceil(x2 * sx) + 裁剪扩展像素,
-            math.ceil(y2 * sy) + 裁剪扩展像素,
-            w, h, 对齐倍数)
-        return _crop_batch(image, [rect] * image.shape[0], 对齐倍数,
+        selected = range(len(boxes)) if 区域序号 == -1 else (区域序号,)
+        indexed_boxes = []
+        for region_index in selected:
+            x1, y1, x2, y2 = _xyxy(boxes[region_index])
+            rect = _align_box(
+                math.floor(x1 * sx) - 裁剪扩展像素,
+                math.floor(y1 * sy) - 裁剪扩展像素,
+                math.ceil(x2 * sx) + 裁剪扩展像素,
+                math.ceil(y2 * sy) + 裁剪扩展像素,
+                w, h, alignment)
+            for image_index in range(image.shape[0]):
+                indexed_boxes.append((image_index, rect))
+        return _emit_crops(image, indexed_boxes, alignment, 图像预览,
                            reference=(src_w, src_h))
 
 
@@ -255,15 +302,20 @@ class AIChatCropFromMask:
             "遮罩阈值": ("FLOAT", {"default": 0.01, "min": 0.0, "max": 1.0, "step": 0.01}),
             "对齐倍数": (ALIGNMENTS, {"default": "8"}),
             **_EXPANSION,
+            "图像预览": (_PREVIEW_MODES, {"default": "裁剪结果"}),
         }}
 
     RETURN_TYPES, RETURN_NAMES = _OUTPUT_TYPES, _OUTPUT_NAMES
+    OUTPUT_IS_LIST = (True, True, True, True)
+    OUTPUT_NODE = True
     FUNCTION = "crop"
-    CATEGORY = "🫧 AI Chat/局部裁剪"
+    CATEGORY = "🫧 AI Chat"
     DESCRIPTION = "手绘遮罩只用于定位，自动转成矩形裁剪和矩形遮罩。"
 
-    def crop(self, 原图像, 手绘遮罩, 遮罩阈值, 对齐倍数, 裁剪扩展像素):
+    def crop(self, 原图像, 手绘遮罩, 遮罩阈值, 对齐倍数, 裁剪扩展像素,
+             图像预览="裁剪结果"):
         image = _image(原图像)
+        alignment = _validate_alignment(对齐倍数)
         mask = _mask(手绘遮罩, image.shape[0])
         _, h, w, _ = image.shape
         if tuple(mask.shape[1:]) != (h, w):
@@ -277,8 +329,8 @@ class AIChatCropFromMask:
             y2, x2 = (active.max(dim=0).values + 1).tolist()
             boxes.append(_align_box(x1 - 裁剪扩展像素, y1 - 裁剪扩展像素,
                                     x2 + 裁剪扩展像素, y2 + 裁剪扩展像素,
-                                    w, h, 对齐倍数))
-        return _crop_batch(image, boxes, 对齐倍数)
+                                    w, h, alignment))
+        return _emit_crops(image, list(enumerate(boxes)), alignment, 图像预览)
 
 
 def _resize(tile, height, width):
@@ -311,34 +363,59 @@ class AIChatPasteCrop:
 
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("合并图像",)
+    INPUT_IS_LIST = True
     FUNCTION = "paste"
-    CATEGORY = "🫧 AI Chat/局部裁剪"
+    CATEGORY = "🫧 AI Chat"
     DESCRIPTION = "根据真实 BBOX 回贴；仅缩放图块，不缩放原图，自动剔除对齐补边。"
 
     def paste(self, 原图像, 编辑后图像, 裁剪数据, 边缘羽化像素):
-        original = _image(原图像)
-        edited = _image(编辑后图像, "编辑后图像")
-        if not isinstance(裁剪数据, dict) or 裁剪数据.get("version") != 1:
-            raise ValueError("需要连接本插件生成的裁剪数据，不能直接传入 AI JSON。")
+        # INPUT_IS_LIST gathers items from the automatically mapped crop branch.
+        originals = 原图像 if isinstance(原图像, list) else [原图像]
+        edits = 编辑后图像 if isinstance(编辑后图像, list) else [编辑后图像]
+        records = 裁剪数据 if isinstance(裁剪数据, list) else [裁剪数据]
+        feather_values = 边缘羽化像素 if isinstance(边缘羽化像素, list) else [边缘羽化像素]
+        if len(originals) != 1 or not feather_values:
+            raise ValueError("原图像必须是单个 IMAGE 输入；不能用多路原图列表混合回贴。")
+        original = _image(originals[0])
+        if len(edits) != len(records) or not edits:
+            raise ValueError("编辑结果数量与裁剪数据不一致，请确保每个区域都编辑成功且没有改变顺序。")
+        feather = int(feather_values[0])
+        if feather < 0:
+            raise ValueError("边缘羽化不能为负数。")
         count, h, w, _ = original.shape
-        if edited.shape[0] != count or len(裁剪数据.get("boxes", [])) != count:
-            raise ValueError("原图、编辑图和裁剪数据的批次数量不一致。")
-        if (裁剪数据.get("original_width"), 裁剪数据.get("original_height")) != (w, h):
-            raise ValueError("原图尺寸与裁剪数据不一致，不能安全回贴。")
-        bw, bh = 裁剪数据["batch_width"], 裁剪数据["batch_height"]
         result = original.clone()
-        for i, box in enumerate(裁剪数据["boxes"]):
-            x, y, sw, sh = (int(box[k]) for k in ("x", "y", "width", "height"))
-            if not (0 <= x < w and 0 <= y < h and 0 < sw <= bw and 0 < sh <= bh
-                    and x + sw <= w and y + sh <= h):
-                raise ValueError("回贴 BBOX 超出原图边界。")
-            # Align the *whole* edited patch to the padded crop canvas first.
-            # Its padded right/bottom pixels are then deliberately discarded.
-            patch = _resize(edited[i], bh, bw)
-            patch = patch[:sh, :sw, :3].to(device=result.device, dtype=result.dtype)
-            alpha = _soft_rectangle(sh, sw, 边缘羽化像素, result.device, result.dtype)
-            target = result[i, y:y + sh, x:x + sw, :3]
-            target.copy_(target * (1 - alpha[..., None]) + patch * alpha[..., None])
+        for item_index, (edited_item, record) in enumerate(zip(edits, records)):
+            if not isinstance(record, dict) or record.get("version") != 1:
+                raise ValueError("请连接裁剪节点输出的裁剪数据，不要直接连接 AI JSON。")
+            if (record.get("original_width"), record.get("original_height")) != (w, h):
+                raise ValueError("裁剪数据原图尺寸与当前原图不一致，不能回贴。")
+            edited = _image(edited_item, "编辑后图像")
+            boxes = record.get("boxes", [])
+            # Compatibility: older metadata may describe an image batch.
+            source_index = record.get("source_batch_index")
+            if source_index is None and len(boxes) == count and edited.shape[0] == count:
+                indices = range(count)
+            elif len(boxes) == 1 and edited.shape[0] == 1:
+                source_index = 0 if source_index is None else source_index
+                if not isinstance(source_index, int) or not 0 <= source_index < count:
+                    raise ValueError("裁剪数据源图片序号无效。")
+                indices = (source_index,)
+            else:
+                raise ValueError(f"第 {item_index + 1} 组裁剪数据与编辑图像批次不匹配。")
+            bw, bh = record["batch_width"], record["batch_height"]
+            for patch_index, original_index in enumerate(indices):
+                box = boxes[patch_index] if len(boxes) > 1 else boxes[0]
+                x, y, sw, sh = (int(box[k]) for k in ("x", "y", "width", "height"))
+                if not (0 <= x < w and 0 <= y < h and 0 < sw <= bw and 0 < sh <= bh
+                        and x + sw <= w and y + sh <= h):
+                    raise ValueError("回贴 BBOX 超出原图边界。")
+                # Non-uniform scaling to padded canvas; discard padding.
+                patch = _resize(edited[patch_index], bh, bw)
+                patch = patch[:sh, :sw, :3].to(device=result.device, dtype=result.dtype)
+                alpha = _soft_rectangle(sh, sw, feather, result.device, result.dtype)
+                target = result[original_index, y:y + sh, x:x + sw, :3]
+                target.copy_(target * (1 - alpha[..., None]) + patch * alpha[..., None])
+        # Multiple/overlapping regions are composited in regions-array order.
         return (result,)
 
 

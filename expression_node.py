@@ -216,7 +216,7 @@ class ExpressionNode:
     RETURN_TYPES = ("INT", "FLOAT", "STRING", )
     RETURN_NAMES = ("整数", "浮点数", "字符串", )
     FUNCTION = "evaluate"
-    CATEGORY = "🫧 AI Chat/文本工具"
+    CATEGORY = "🫧 AI Chat"
     OUTPUT_NODE = False
     DESCRIPTION = "安全计算白名单数字或字符串表达式，并支持引用上游输入。"
 

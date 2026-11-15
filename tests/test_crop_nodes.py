@@ -20,17 +20,79 @@ def zeros(height=13, width=17, batch=1):
 
 
 def mask_crop(image, mask, align="8", edges=0):
-    return AIChatCropFromMask().crop(
-        image, mask, 0.01, align, edges)[:3]
+    result = AIChatCropFromMask().crop(image, mask, 0.01, align, edges, "关闭")["result"]
+    assert len(result[0]) == 1
+    return tuple(item[0] for item in result[:3])
 
 
 def json_crop(image, value, align="8", edges=0):
-    return AIChatCropFromJSON().crop(
-        image, json.dumps(value), 0, align,
-        edges, False)[:3]
+    result = AIChatCropFromJSON().crop(
+        image, json.dumps(value), 0, align, edges, False, "关闭")["result"]
+    assert len(result[0]) == 1
+    return tuple(item[0] for item in result[:3])
 
 
 class CropNodesTest(unittest.TestCase):
+    def test_inline_ui_preview_and_off_option(self):
+        image = zeros(40, 40)
+        data = {"image_width": 40, "image_height": 40,
+                "regions": [{"bbox": [8, 8, 15, 15]}]}
+        saved = []
+
+        class FakePreview:
+            def save_images(self, imgs, prefix):
+                saved.append(tuple(imgs.shape))
+                return {"ui": {"images": [{"filename": "fake.png", "type": "temp"}]}}
+
+        with mock.patch.dict(sys.modules, {"nodes": SimpleNamespace(PreviewImage=FakePreview)}):
+            display = AIChatCropFromJSON().crop(
+                image, json.dumps(data), 0, "8", 0, False, "裁剪结果")
+            self.assertEqual(len(display["ui"]["images"]), 1)
+            self.assertEqual(saved[0], (1, 8, 8, 3))
+            display = AIChatCropFromJSON().crop(
+                image, json.dumps(data), 0, "8", 0, False, "原图标框")
+            self.assertEqual(saved[1], (1, 40, 40, 3))
+        self.assertEqual(len(display["result"][0]), 1)
+        self.assertNotIn("ui", AIChatCropFromJSON().crop(
+            image, json.dumps(data), 0, "8", 0, False, "关闭"))
+
+    def test_multiple_regions_use_individual_sizes_and_merge(self):
+        image = zeros(40, 56)
+        data = {"image_width": 56, "image_height": 40,
+                "regions": [
+                    {"label": "A", "bbox": [8, 8, 14, 14]},
+                    {"label": "B", "bbox": [27, 10, 50, 35]},
+                ]}
+        self.assertEqual(AIChatCropFromJSON.INPUT_TYPES()["required"]["区域序号"][1]["min"], -1)
+        self.assertTrue(all(AIChatCropFromJSON.OUTPUT_IS_LIST))
+        self.assertTrue(AIChatPasteCrop.INPUT_IS_LIST)
+        crops, masks, metadata, previews = AIChatCropFromJSON().crop(
+            image, json.dumps(data), -1, "8", 0, False, "关闭")["result"]
+        self.assertEqual(len(crops), 2)
+        self.assertNotEqual(crops[0].shape[1:3], crops[1].shape[1:3])
+        self.assertEqual(len(metadata), 2)
+        edited = [torch.ones_like(tile) for tile in crops]
+        output = AIChatPasteCrop().paste([image], edited, metadata, [0])[0]
+        for record in metadata:
+            box = record["boxes"][0]
+            x, y, w, h = (box[k] for k in ("x", "y", "width", "height"))
+            self.assertTrue(torch.equal(output[:, y:y+h, x:x+w],
+                                        torch.ones((1, h, w, 3))))
+        self.assertTrue(torch.equal(output[:, 0, 0], image[:, 0, 0]))
+        single = AIChatCropFromJSON().crop(
+            image, json.dumps(data), 0, "8", 0, False, "关闭")["result"]
+        self.assertEqual(len(single[0]), 1)
+        self.assertEqual(len(single[2]), 1)
+
+    def test_invalid_legacy_widget_values_fail_clearly(self):
+        image = zeros(40, 40)
+        data = json.dumps({"image_width": 40, "image_height": 40,
+                           "regions": [{"bbox": [8, 8, 16, 16]}]})
+        with self.assertRaisesRegex(ValueError, "NaN"):
+            AIChatCropFromJSON().crop(image, data, float("nan"), "8", 0, False, "关闭")
+        with self.assertRaisesRegex(ValueError, "对齐倍数"):
+            AIChatCropFromJSON().crop(image, data, 0, "0", 0, False, "关闭")
+
     def test_regex_extraction_of_ai_text(self):
         data = AI_Assistant.多模态AI助手节点.规范化裁剪回复(
             '识别结果：bbox: [12, 20, 80, 99]，可以裁剪。', (1920, 1080))
@@ -38,9 +100,9 @@ class CropNodesTest(unittest.TestCase):
         self.assertEqual((parsed["image_width"], parsed["image_height"]), (1920, 1080))
         self.assertEqual(parsed["regions"][0]["bbox"], [12.0, 20.0, 80.0, 99.0])
         image = zeros(108, 192)
-        cropped = AIChatCropFromJSON().crop(image, data, 0, "2", 0, False)
-        self.assertEqual(cropped[2]["boxes"][0]["x"], 0)
-        self.assertGreater(cropped[2]["boxes"][0]["width"], 0)
+        cropped = AIChatCropFromJSON().crop(image, data, 0, "2", 0, False, "关闭")["result"]
+        self.assertEqual(cropped[2][0]["boxes"][0]["x"], 0)
+        self.assertGreater(cropped[2][0]["boxes"][0]["width"], 0)
 
         with self.assertRaisesRegex(ValueError, "bbox"):
             AI_Assistant.多模态AI助手节点.规范化裁剪回复(
@@ -55,8 +117,8 @@ class CropNodesTest(unittest.TestCase):
         image = zeros(25, 25)
         data = {"image_width": 25, "image_height": 25,
                 "regions": [{"bbox": [8, 8, 10, 10]}]}
-        cropped, rect, metadata, preview = AIChatCropFromJSON().crop(
-            image, json.dumps(data), 0, "2", 0, False)
+        raw = AIChatCropFromJSON().crop(image, json.dumps(data), 0, "2", 0, False, "关闭")
+        cropped, rect, metadata, preview = (value[0] for value in raw["result"])
         self.assertEqual(tuple(preview.shape), tuple(image.shape))
         box = metadata["boxes"][0]
         self.assertEqual(preview[0, box["y"], box["x"], 0].item(), 1.0)
@@ -134,12 +196,14 @@ class CropNodesTest(unittest.TestCase):
         masks = torch.zeros((2, 13, 17))
         masks[0, 1:3, 2:4] = 1
         masks[1, 10:13, 15:17] = 1
-        cropped, cropped_masks, data = mask_crop(image, masks)
-        self.assertEqual(cropped.shape[0], 2)
-        self.assertEqual(cropped_masks.shape[0], 2)
-        self.assertNotEqual(data["boxes"][0]["x"], data["boxes"][1]["x"])
-        self.assertEqual(tuple(cropped.shape[1:3]), tuple(cropped_masks.shape[1:]))
-        self.assertTrue(torch.equal(image, AIChatPasteCrop().paste(image, cropped, data, 0)[0]))
+        cropped, cropped_masks, data, _ = AIChatCropFromMask().crop(
+            image, masks, 0.01, "8", 0, "关闭")["result"]
+        self.assertEqual(len(cropped), 2)
+        self.assertEqual(len(cropped_masks), 2)
+        self.assertNotEqual(data[0]["boxes"][0]["x"], data[1]["boxes"][0]["x"])
+        for crop, mask in zip(cropped, cropped_masks):
+            self.assertEqual(tuple(crop.shape[1:3]), tuple(mask.shape[1:]))
+        self.assertTrue(torch.equal(image, AIChatPasteCrop().paste([image], cropped, data, [0])[0]))
 
     def test_reject_aspect_mismatch_and_empty_mask(self):
         with self.assertRaisesRegex(ValueError, "宽高比"):

@@ -297,7 +297,7 @@ class AIChatLoadImage:
         "由透明通道生成的遮罩；透明区域为白色，不透明区域为黑色。",
     )
     FUNCTION = "load_image"
-    CATEGORY = "🫧 AI Chat/图像加载"
+    CATEGORY = "🫧 AI Chat"
     DESCRIPTION = "从 ComfyUI input 目录上传或选择单张图片，并输出文件名和透明通道遮罩。"
     SEARCH_ALIASES = ["加载图片", "图片文件名", "Load Image"]
 
@@ -387,7 +387,7 @@ class AIChatLoadImagesFromFolder:
         "与图像批次同顺序、用换行分隔的文件名。",
     )
     FUNCTION = "load_images"
-    CATEGORY = "🫧 AI Chat/图像加载"
+    CATEGORY = "🫧 AI Chat"
     DESCRIPTION = "按稳定顺序从文件夹加载图片批次；多个文件名按相同顺序用换行连接。"
     SEARCH_ALIASES = ["加载图片文件夹", "批量加载图片", "Load Images From Folder"]
 
