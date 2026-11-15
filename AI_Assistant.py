@@ -4,6 +4,7 @@ except ImportError:
     OpenAI = None
 
 from urllib.parse import urlsplit
+import json
 
 try:
     from .image_utils import pil_to_base64_data_url, tensor_to_pils
@@ -17,6 +18,7 @@ try:
     from .skill_presets import SKILL_PROMPTS, load_skill_prompt
     from .video_utils import video_to_data_url
     from .video_segments import VideoSegmentsError, parse_video_segments
+    from .crop_nodes import _read_json, _xyxy
 except ImportError:  # Direct import in unit tests.
     from image_utils import pil_to_base64_data_url, tensor_to_pils
     from provider_config import (
@@ -29,12 +31,21 @@ except ImportError:  # Direct import in unit tests.
     from skill_presets import SKILL_PROMPTS, load_skill_prompt
     from video_utils import video_to_data_url
     from video_segments import VideoSegmentsError, parse_video_segments
+    from crop_nodes import _read_json, _xyxy
 
 
 class 多模态AI助手节点:
     # 将系统提示词定义为类属性
     system_prompts = {
         "默认": "你是一个多模态综合问题解决的AI助手，擅长AI绘画、技术等领域，并总是用中文回应。",
+        "区域识别裁剪": (
+            "你是图像目标区域定位助手。根据用户描述识别要裁剪的对象。"
+            "必须仅输出一个JSON对象，格式为{\"regions\":[{\"label\":\"目标名称\",\"bbox\":[x1,y1,x2,y2]}]}。"
+            "坐标采用左上角为(0,0)、右下边界不包含的像素坐标，横坐标向右、纵坐标向下。"
+            "用户消息提供了准确的输入图像像素尺寸；必须据此定位，不要自行猜测或另报分辨率。"
+            "完整框选用户指定对象，多个对象分别输出多个regions，未找到目标时返回空regions。"
+            "不要输出说明、Markdown、代码围栏或尺寸字段。"
+        ),
         "翻译": "Role: You are a language rewriting and phrase translation specialist.\nRequire:\n- Respect the original intention and keep the original format unchanged\n- If the original text is a phrase, translate it directly\n- Only reply with the rewrite result, without any explanation or other content\n- If the input is not Chinese, rewrite the content in Chinese\n- If you input Chinese, rewrite the content in English\nTask: Rewrite the following.",
         "反推": "你是专业的图像分析与生图提示词专家。结合参考图和用户要求，生成可直接用于图像生成的自然语言提示词。\n\n先观察画面中可见的主体、动作、外观、场景、空间关系、构图、色彩、光影、材质、纹理和艺术风格；画面中存在可辨认的文字时，准确保留原文并说明位置。根据画面选择相关细节，不必机械覆盖每个类别。\n\n优先忠实描述画面；用户明确要求修改或强调的内容优先，将其自然融入结果，并保留未要求更改的重要特征。对无法辨认的文字、人物身份、国籍、具体摄影器材或其他不可见信息不要猜测，也不要为凑细节而编造。不要使用不必要的画质词、品牌名或渲染器名称。\n\n输出一段连贯、具体的中文提示词，重点突出主体、空间关系和视觉特征。直接输出结果，不添加解释、标题或 Markdown。若没有提供图片，则依据用户文字生成提示词，不假称看到了图片。",
         "反推Tag": "你是一位专业的图像分析专家。请仔细分析提供的图片，提取所有视觉元素并转换为中文标签，用于AI绘图模型使用。\r\n分析要点：\r\n1. 主体内容：\r\n   - 主要对象（人物/动物/物体）\r\n   - 外观特征（体态/表情/服装/材质）\r\n   - 动作姿态\r\n   - 细节特征（装饰/纹理/标志）\r\n2. 场景环境：\r\n   - 场景类型和环境\r\n   - 空间布局\r\n   - 环境元素\r\n   - 时间和天气\r\n3. 光影色彩：\r\n   - 光源和光照效果\r\n   - 主要色调和配色\r\n   - 明暗对比和氛围\r\n4. 构图视角：\r\n   - 构图方式\r\n   - 视角和景别\r\n   - 画面重点\r\n5. 艺术风格：\r\n   - 整体风格（写实/动漫/插画等）\r\n   - 特殊艺术效果\r\n   - 渲染技法\r\n输出要求：\r\n- 使用中文标签，以逗号分隔\r\n- 按重要性排序：主体 \u003e 场景 \u003e 风格 \u003e 细节 \u003e 技术特征\r\n- 所有标签在同一行内\r\n- 直接输出标签，不添加任何分类或说明\r\n示例输出：\r\n可爱女孩，金色长发，白色连衣裙，春日花园，阳光明媚，清新动漫风，温暖色调，甜美笑容，蝴蝶结装饰，半身构图，柔和光影，高清细节\r\n请直接输出标签序列，确保客观描述，避免主观评价。",
@@ -83,13 +94,37 @@ class 多模态AI助手节点:
     DESCRIPTION = "使用持久化服务商配置调用 OpenAI 兼容的文本或多模态模型。"
     SEARCH_ALIASES = ["AI助手", "多模态", "OpenAI兼容"]
 
-    def 图像预处理(self, image):
+    def 图像预处理(self, image, 记录尺寸=False):
         urls = []
+        sizes = []
         for pil_image in tensor_to_pils(image):
             normalized = pil_image.copy()
             normalized.thumbnail((2048, 2048))
             urls.append(pil_to_base64_data_url(normalized, quality=85))
-        return urls
+            sizes.append(normalized.size)
+        return (urls, sizes) if 记录尺寸 else urls
+
+    @staticmethod
+    def 规范化裁剪回复(ai回复, 参考尺寸):
+        """Stamp actual outbound image dimensions, never model-guessed dimensions."""
+        data = _read_json(ai回复)
+        regions = data.get("regions", data.get("boxes", data.get("bboxes")))
+        if regions is None and "bbox" in data:
+            regions = [data]
+        if not isinstance(regions, list):
+            raise ValueError("区域识别必须输出包含 regions 数组的 JSON。")
+        if not regions:
+            raise ValueError("AI 未找到指定目标；请调整用户输入或换用视觉模型。")
+        normalized = []
+        for region in regions:
+            rect = _xyxy(region)
+            entry = {"bbox": list(rect)}
+            if isinstance(region, dict) and isinstance(region.get("label"), str):
+                entry["label"] = region["label"]
+            normalized.append(entry)
+        w, h = 参考尺寸
+        return json.dumps({"image_width": int(w), "image_height": int(h),
+                           "regions": normalized}, ensure_ascii=False)
 
     def 构建消息(self, 用户输入, 图像地址列表, 视频地址=None):
         current_message = {"role": "user", "content": []}
@@ -144,7 +179,17 @@ class 多模态AI助手节点:
             raise ValueError("原生视频输入目前仅适配 OpenRouter；当前服务商的视频接口尚未适配。")
         if 输入视频 is not None and 图片处理模式 == "逐张批量分析" and 输入图像 is not None:
             raise ValueError("视频与参考图片一起使用时，请选择“多图一起分析”，以免重复发送视频。")
-        图像地址列表 = self.图像预处理(输入图像) if 输入图像 is not None else []
+        裁剪识别模式 = (预设系统提示 == "区域识别裁剪")
+        if 裁剪识别模式:
+            if 输入图像 is None:
+                raise ValueError("区域识别裁剪需要连接输入图像。")
+            if 输入视频 is not None:
+                raise ValueError("区域识别裁剪只支持图片，不支持视频。")
+            图像地址列表, 参考尺寸列表 = self.图像预处理(输入图像, 记录尺寸=True)
+            if len(图像地址列表) != 1:
+                raise ValueError("区域识别裁剪每次仅支持一张图片，以免坐标混淆。")
+        else:
+            图像地址列表 = self.图像预处理(输入图像) if 输入图像 is not None else []
         视频地址 = video_to_data_url(输入视频) if 输入视频 is not None else None
         请求图像组 = ([[image] for image in 图像地址列表]
                     if 图片处理模式 == "逐张批量分析" and 图像地址列表
@@ -164,6 +209,12 @@ class 多模态AI助手节点:
             分镜列表 = []
             for 当前序号, 图像组 in enumerate(请求图像组, start=1):
                 完整消息 = self.构建消息(用户输入, 图像组, 视频地址)
+                if 裁剪识别模式:
+                    w, h = 参考尺寸列表[0]
+                    完整消息[0]["content"].insert(0, {
+                        "type": "text",
+                        "text": f"图像的实际发送尺寸：宽 {w} 像素，高 {h} 像素。请在此坐标系下定位区域。",
+                    })
                 response = client.chat.completions.create(
                     model=真实模型名称,
                     messages=[{"role": "system", "content": 最终系统提示}] + 完整消息,
@@ -177,6 +228,8 @@ class 多模态AI助手节点:
                 ai回复 = response.choices[0].message.content
                 if not isinstance(ai回复, str) or not ai回复.strip():
                     raise RuntimeError("服务商返回了空回复。")
+                if 裁剪识别模式:
+                    ai回复 = self.规范化裁剪回复(ai回复, 参考尺寸列表[0])
                 if 预设系统提示 == "视频复刻提示词（文字或截图）":
                     分镜列表.extend(parse_video_segments(ai回复))
                 回复列表.append(ai回复)

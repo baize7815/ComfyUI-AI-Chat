@@ -31,6 +31,7 @@ for _module_name in (
     "expression_node",
     "googlenano",
     "image_loader_nodes",
+    "crop_nodes",
 ):
     _load_node_module(_module_name)
 
