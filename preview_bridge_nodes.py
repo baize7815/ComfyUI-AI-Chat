@@ -239,4 +239,4 @@ class AIChatPreviewBridge:
 
 
 NODE_CLASS_MAPPINGS = {"AIChatPreviewBridge": AIChatPreviewBridge}
-NODE_DISPLAY_NAME_MAPPINGS = {"AIChatPreviewBridge": "AI Chat 桥接预览图像"}
+NODE_DISPLAY_NAME_MAPPINGS = {"AIChatPreviewBridge": "桥接预览图像"}

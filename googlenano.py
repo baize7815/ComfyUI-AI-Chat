@@ -302,4 +302,4 @@ class GoogleNanoNode:
 
 
 NODE_CLASS_MAPPINGS = {"GoogleNanoNode": GoogleNanoNode}
-NODE_DISPLAY_NAME_MAPPINGS = {"GoogleNanoNode": "AI Chat 通用图片生成"}
+NODE_DISPLAY_NAME_MAPPINGS = {"GoogleNanoNode": "通用图片生成"}

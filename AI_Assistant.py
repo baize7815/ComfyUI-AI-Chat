@@ -264,4 +264,4 @@ class 多模态AI助手节点:
                     pass
 
 NODE_CLASS_MAPPINGS = {"MultiModalAssistant": 多模态AI助手节点}
-NODE_DISPLAY_NAME_MAPPINGS = {"MultiModalAssistant": "AI Chat 多模态助手"}
+NODE_DISPLAY_NAME_MAPPINGS = {"MultiModalAssistant": "多模态助手"}

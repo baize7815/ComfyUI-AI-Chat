@@ -246,6 +246,6 @@ class AIChatTileMerge:
 
 NODE_CLASS_MAPPINGS = {"AIChatTileSplit": AIChatTileSplit, "AIChatTileMerge": AIChatTileMerge}
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "AIChatTileSplit": "AI Chat 图像分块",
-    "AIChatTileMerge": "AI Chat 分块合并",
+    "AIChatTileSplit": "图像分块",
+    "AIChatTileMerge": "分块合并",
 }

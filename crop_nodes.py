@@ -425,7 +425,7 @@ NODE_CLASS_MAPPINGS = {
     "AIChatPasteCrop": AIChatPasteCrop,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "AIChatCropFromJSON": "AI Chat JSON区域裁剪",
-    "AIChatCropFromMask": "AI Chat 手绘遮罩裁剪",
-    "AIChatPasteCrop": "AI Chat 局部图像回贴",
+    "AIChatCropFromJSON": "JSON区域裁剪",
+    "AIChatCropFromMask": "手绘遮罩裁剪",
+    "AIChatPasteCrop": "局部图像回贴",
 }
