@@ -74,10 +74,13 @@ class 多模态AI助手节点:
                 "随机度": ("FLOAT", {"default": 1, "min": 0.0, "max": 2.0, "step": 0.1}),
             },
             "optional": {
-                "输入图像": ("IMAGE",),
+                "image_1": ("IMAGE", {"tooltip": "参考图片 1；每个 image 插槽只接受一张图片。"}),
+                "image_2": ("IMAGE", {"tooltip": "参考图片 2；按插槽名称排序，不重新编号。"}),
+                "image_3": ("IMAGE", {"tooltip": "参考图片 3；允许不连接前面的插槽。"}),
+                "image_4": ("IMAGE", {"tooltip": "参考图片 4；最多四张参考图一起分析。"}),
+                "image_group": ("IMAGE", {"tooltip": "批量图片，每张单独请求一次 AI；不能与 image_1~4 或 video 混用，最多 8 张。"}),
+                "video": ("VIDEO", {"tooltip": "原生视频输入；支持 OpenRouter 视频接口，最大 50 MiB；不能与 image_group 混用。"}),
                 "最大token": ("INT", {"default": 8192, "min": 100, "max": 1000000, "step": 512}),
-                "图片处理模式": (["多图一起分析", "逐张批量分析"], {"default": "多图一起分析", "tooltip": "多图一起分析发送一次请求；逐张批量分析为每张图发送独立请求。"}),
-                "输入视频": ("VIDEO", {"tooltip": "原生视频输入；当前支持 OpenRouter 视频接口，最大 50 MiB。"}),
             }
         }
 
@@ -94,10 +97,10 @@ class 多模态AI助手节点:
     DESCRIPTION = "使用持久化服务商配置调用 OpenAI 兼容的文本或多模态模型。"
     SEARCH_ALIASES = ["AI助手", "多模态", "OpenAI兼容"]
 
-    def 图像预处理(self, image, 记录尺寸=False):
+    def 图像预处理(self, image, 记录尺寸=False, 最大图片数=8):
         urls = []
         sizes = []
-        for pil_image in tensor_to_pils(image):
+        for pil_image in tensor_to_pils(image, max_images=最大图片数):
             normalized = pil_image.copy()
             normalized.thumbnail((2048, 2048))
             urls.append(pil_to_base64_data_url(normalized, quality=85))
@@ -126,7 +129,21 @@ class 多模态AI助手节点:
         return json.dumps({"image_width": int(w), "image_height": int(h),
                            "regions": normalized}, ensure_ascii=False)
 
-    def 构建消息(self, 用户输入, 图像地址列表, 视频地址=None):
+    @staticmethod
+    def 解析输入模式(image_1=None, image_2=None, image_3=None, image_4=None,
+               image_group=None, video=None):
+        参考图槽 = [
+            ("image_1", image_1), ("image_2", image_2),
+            ("image_3", image_3), ("image_4", image_4),
+        ]
+        已连接参考图 = [(name, value) for name, value in 参考图槽 if value is not None]
+        if image_group is not None and 已连接参考图:
+            raise ValueError("image_group 不能与 image_1～image_4 同时连接，请二选一。")
+        if image_group is not None and video is not None:
+            raise ValueError("video 不能与 image_group 同时连接，请改用参考图插槽或仅输入视频。")
+        return ("逐张批量分析" if image_group is not None else "多图一起分析"), 已连接参考图
+
+    def 构建消息(self, 用户输入, 命名图像列表, 视频地址=None):
         current_message = {"role": "user", "content": []}
         if 用户输入.strip():
             current_message["content"].append({"type": "text", "text": 用户输入})
@@ -136,9 +153,10 @@ class 多模态AI助手节点:
         if 视频地址:
             current_message["content"].append({"type": "text", "text": "以下视频为待分析的原视频。"})
             current_message["content"].append({"type": "video_url", "video_url": {"url": 视频地址}})
-        for index, image_url in enumerate(图像地址列表, start=1):
-            if len(图像地址列表) > 1 or 视频地址:
-                current_message["content"].append({"type": "text", "text": f"参考图片 Image {index}："})
+        for slot_name, image_url in 命名图像列表:
+            current_message["content"].append({
+                "type": "text", "text": f"参考图片 {slot_name}：",
+            })
             current_message["content"].append({
                 "type": "image_url",
                 "image_url": {"url": image_url, "detail": "auto"},
@@ -154,13 +172,16 @@ class 多模态AI助手节点:
         系统提示,
         用户输入,
         随机度,
-        输入图像=None,
+        image_1=None,
+        image_2=None,
+        image_3=None,
+        image_4=None,
+        image_group=None,
+        video=None,
         最大token=4096,
-        图片处理模式="多图一起分析",
-        输入视频=None,
     ):
-        if 图片处理模式 not in ("多图一起分析", "逐张批量分析"):
-            raise ValueError(f"未知图片处理模式：{图片处理模式}")
+        图片处理模式, 已连接参考图 = self.解析输入模式(
+            image_1, image_2, image_3, image_4, image_group, video)
         if 预设系统提示 not in self.system_prompts:
             raise ValueError(f"未知系统提示预设：{预设系统提示}")
         if 预设系统提示 in SKILL_PROMPTS:
@@ -170,30 +191,33 @@ class 多模态AI助手节点:
         else:
             最终系统提示 = 系统提示
 
+        裁剪识别模式 = (预设系统提示 == "区域识别裁剪")
+        if 裁剪识别模式:
+            if image_1 is None or len(已连接参考图) != 1 or image_group is not None or video is not None:
+                raise ValueError("区域识别裁剪只能连接 image_1 一张图片，不能连接其他图片或视频。")
         if OpenAI is None:
             raise RuntimeError("未安装 openai 依赖，请重新安装插件依赖。")
         provider, 真实模型名称 = resolve_provider_and_model(服务商配置, 选择模型, 手动模型)
         接入地址 = provider["base_url"]
         API密钥 = provider["api_key"]
-        if 输入视频 is not None and urlsplit(接入地址).hostname != "openrouter.ai":
+        if video is not None and urlsplit(接入地址).hostname != "openrouter.ai":
             raise ValueError("原生视频输入目前仅适配 OpenRouter；当前服务商的视频接口尚未适配。")
-        if 输入视频 is not None and 图片处理模式 == "逐张批量分析" and 输入图像 is not None:
-            raise ValueError("视频与参考图片一起使用时，请选择“多图一起分析”，以免重复发送视频。")
-        裁剪识别模式 = (预设系统提示 == "区域识别裁剪")
-        if 裁剪识别模式:
-            if 输入图像 is None:
-                raise ValueError("区域识别裁剪需要连接输入图像。")
-            if 输入视频 is not None:
-                raise ValueError("区域识别裁剪只支持图片，不支持视频。")
-            图像地址列表, 参考尺寸列表 = self.图像预处理(输入图像, 记录尺寸=True)
-            if len(图像地址列表) != 1:
-                raise ValueError("区域识别裁剪每次仅支持一张图片，以免坐标混淆。")
+
+        if image_group is not None:
+            图像地址列表 = self.图像预处理(image_group)
+            请求图像组 = [
+                [(f"image_group[{i}]", url)]
+                for i, url in enumerate(图像地址列表, start=1)
+            ]
+            参考尺寸列表 = []
         else:
-            图像地址列表 = self.图像预处理(输入图像) if 输入图像 is not None else []
-        视频地址 = video_to_data_url(输入视频) if 输入视频 is not None else None
-        请求图像组 = ([[image] for image in 图像地址列表]
-                    if 图片处理模式 == "逐张批量分析" and 图像地址列表
-                    else [图像地址列表])
+            命名图像列表, 参考尺寸列表 = [], []
+            for slot_name, image in 已连接参考图:
+                urls, sizes = self.图像预处理(image, 记录尺寸=True, 最大图片数=1)
+                命名图像列表.append((slot_name, urls[0]))
+                参考尺寸列表.append((slot_name, sizes[0]))
+            请求图像组 = [命名图像列表]
+        视频地址 = video_to_data_url(video) if video is not None else None
         progress = ProgressTracker(len(请求图像组))
         client = None
         当前序号 = 0
@@ -210,7 +234,7 @@ class 多模态AI助手节点:
             for 当前序号, 图像组 in enumerate(请求图像组, start=1):
                 完整消息 = self.构建消息(用户输入, 图像组, 视频地址)
                 if 裁剪识别模式:
-                    w, h = 参考尺寸列表[0]
+                    w, h = 参考尺寸列表[0][1]
                     完整消息[0]["content"].insert(0, {
                         "type": "text",
                         "text": f"图像的实际发送尺寸：宽 {w} 像素，高 {h} 像素。请在此坐标系下定位区域。",
@@ -229,7 +253,7 @@ class 多模态AI助手节点:
                 if not isinstance(ai回复, str) or not ai回复.strip():
                     raise RuntimeError("服务商返回了空回复。")
                 if 裁剪识别模式:
-                    ai回复 = self.规范化裁剪回复(ai回复, 参考尺寸列表[0])
+                    ai回复 = self.规范化裁剪回复(ai回复, 参考尺寸列表[0][1])
                 if 预设系统提示 == "视频复刻提示词（文字或截图）":
                     分镜列表.extend(parse_video_segments(ai回复))
                 回复列表.append(ai回复)

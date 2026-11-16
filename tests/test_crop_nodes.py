@@ -236,7 +236,7 @@ class CropNodesTest(unittest.TestCase):
             result = node.处理多模态请求(
                 服务商配置="test", 选择模型="fake", 手动模型="",
                 预设系统提示="区域识别裁剪", 系统提示="",
-                用户输入="寻找 logo", 随机度=1, 输入图像=image,
+                用户输入="寻找 logo", 随机度=1, image_1=image,
             )
         data = json.loads(result[0])
         self.assertEqual((data["image_width"], data["image_height"]), (2048, 256))

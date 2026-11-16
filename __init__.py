@@ -34,6 +34,8 @@ for _module_name in (
     "crop_nodes",
     "tile_nodes",
     "preview_bridge_nodes",
+    "baize_sampler_nodes",
+    "baize_pintu_nodes",
 ):
     _load_node_module(_module_name)
 
