@@ -1,20 +1,3 @@
-# Third-party notices
-
-## ComfyUI-Xinbao-Node-Group (interactive composition)
-
-The following files are adapted from the user-provided
-`ComfyUI-Xinbao-Node-Group` archive, matching the upstream source revision
-[`24a40d72bdbd`](https://github.com/lishuihan123/ComfyUI-Xinbao-Node-Group/tree/24a40d72bdbd):
-
-- `baize_pintu_nodes.py`
-- `web/baize_pintu.js`
-
-The upstream repository publishes these files under the MIT License. The
-original copyright and license notice are preserved below. Changes made in
-this repository include the node registration ID, the displayed Chinese
-branding, and the JavaScript extension namespace. The rest of the AI Chat
-repository is covered by its existing license.
-
 ### MIT License
 
 Copyright (c) 2026 lishuihan123

@@ -15,36 +15,18 @@
 - **图像分块 / 分块合并**：按指定行列切割、统一外扩并对齐，整批编辑后自动恢复尺寸、羽化合并；图像分块节点内直接显示编号网格与外扩范围。
 - **桥接预览图像**：在节点内预览、调用 ComfyUI 原生遮罩编辑器，并把修改后的图像与遮罩传给后续节点。
 - **白泽·AITK Qwen2.1采样时间表**：Qwen Image 2.1 的 64 通道 latent 专用 SIGMAS 调度，输出采样信息。
-- **白泽❤构图**：直接在节点内移动、缩放、旋转产品图片，支持画笔、橡皮、描边、透明度和锁定；输出拼合图及产品遮罩。
+- **白泽构图**：直接在节点内移动、缩放、旋转产品图片，支持画笔、橡皮、描边、透明度和锁定；输出拼合图及产品遮罩。
 - **Qwen-Image-2.1 Viggle Turbo Sigmas**：为 Viggle Turbo student nodes 生成随 latent 尺寸变化的 SIGMAS 调度。
 
-## 白泽构图与采样节点
 
-这三个节点由用户提供的 `xinbao_aitk_alignment.rar`、`ComfyUI-Xinbao-Node-Group.rar`
-和 `viggle_turbo.rar` 中的对应节点整合而来，均位于 **🫧 AI Chat** 分类下。
-其中「心宝」显示名称改为「白泽」，同时使用新的内部节点 ID（`BaizeAITKQwen21Sigmas`、
-`BaizePintu`、`BaizeViggleTurboSigmas`），不会覆盖原插件中的相应节点。
-构图的 Python 和前端源码基于上传包的对应版本进行移植，前端交互仍需在 ComfyUI 页面中实测。
-原构图源码可参见 [ComfyUI-Xinbao-Node-Group 的对应历史版本](https://github.com/lishuihan123/ComfyUI-Xinbao-Node-Group/tree/24a40d72bdbd)。
-构图源码的版权与 MIT 许可声明保留在 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
-「**白泽❤构图**」连接 `background`（背景图）与 `product`（产品图）后，
+「**白泽构图**」连接 `background`（背景图）与 `product`（产品图）后，
 点击「读取输入图」，可在节点画布中调整位置、比例、旋转角度、外描边及画笔图层。
 后端合成与遮罩以背景图尺寸为准；产品图的 PNG 透明通道会尽量保留。
 当上游节点没有可供前端查看的原图文件引用时，交互画布可能无法显示该上游图像，
 但后端仍能读取所连接的 IMAGE 张量进行合成。
 
-两个采样节点接入与采样器对应的 `latent` 并输出 `SIGMAS`。
-AITK 节点要求 64 通道 latent、`steps` 在 2–200 之间；
-Viggle Turbo 节点的 `nodes` 默认使用六个 student 位置
-`1.0, 0.9375, 0.875, 0.75, 0.5, 0.25`。
-本次**只移植了以上三个节点**，没有把额外的 LoRA 加载器或图片标准化节点引入。
-
 ## 桥接预览图像
-
-「**桥接预览图像**」位于 **🫧 AI Chat** 分类下，功能参考
-[ComfyUI-Impact-Pack 的 Preview Bridge (Image)](https://github.com/ltdrdata/ComfyUI-Impact-Pack)，
-使用独立的 Python 节点、前端脚本和安全的文件登记接口实现，**不需要安装 Impact Pack**。
 
 将图片接到「images」，运行后直接在节点预览图像；通过 ComfyUI 的原生遮罩编辑器修改预览图并保存，
 再次运行工作流，节点的「图像」和「遮罩」输出会使用编辑后的图像及遮罩（遮罩值 1 表示选中的区域）。
