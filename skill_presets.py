@@ -10,6 +10,7 @@ SKILL_FOLDERS = {
     "Nano Banana提示词": "nb-prompt",
     "展厅3D效果图提示词": "3d-render",
     "商业摄影精修提示词": "commercial-photo-remaster",
+    "MOSS图片提示词": "moss-image-prompt-enhancer",
     "H3替换提示词（文字或截图）": "h3-ref2va-subject-replace",
     "视频复刻提示词（文字或截图）": "cinematic-replica",
 }

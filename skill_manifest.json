@@ -16,6 +16,10 @@
   "low-res-image": [
     "SKILL.md"
   ],
+  "moss-image-prompt-enhancer": [
+    "SKILL.md",
+    "references/layout.md"
+  ],
   "nb-prompt": [
     "SKILL.md",
     "references/cheat_sheet.md",

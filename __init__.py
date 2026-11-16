@@ -32,6 +32,8 @@ for _module_name in (
     "googlenano",
     "image_loader_nodes",
     "crop_nodes",
+    "tile_nodes",
+    "preview_bridge_nodes",
 ):
     _load_node_module(_module_name)
 
@@ -41,6 +43,13 @@ try:
     register_routes()
 except Exception:
     LOGGER.exception("[AI Chat] 服务商配置接口注册失败；节点仍可加载。")
+
+try:
+    from .preview_bridge_routes import register_routes as register_preview_bridge_routes
+
+    register_preview_bridge_routes()
+except Exception:
+    LOGGER.exception("[AI Chat] 桥接预览路由注册失败；其他节点仍可加载。")
 
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]

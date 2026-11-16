@@ -234,7 +234,10 @@ class ProviderStore:
             profile["models"] = _normalize_models(profile.get("models", []))
             profile.setdefault("models_updated_at", "")
             normalized_profiles.append(profile)
-        if not normalized_profiles:
+        # Distinguish a fresh installation (no file, show a starter profile)
+        # from a deliberately emptied store. Recreating the last profile after
+        # deletion makes the UI appear to retain an undeletable account.
+        if not normalized_profiles and not has_persisted_config:
             normalized_profiles.append(deepcopy(DEFAULT_PROFILE))
         return {"version": CONFIG_VERSION, "profiles": normalized_profiles}
 
@@ -375,8 +378,8 @@ class ProviderStore:
             ]
             if len(retained) == len(data["profiles"]):
                 raise ProviderNotFoundError(f"未找到服务商配置：{normalized_name}")
-            if not retained:
-                raise ProviderValidationError("至少需要保留一个服务商配置。")
+            # An empty persisted store is valid. It must stay empty even when
+            # a legacy config.json exists, rather than silently reimport keys.
             data["profiles"] = retained
             self._write_data(data)
 
@@ -473,7 +476,9 @@ def profile_names() -> list[str]:
     except ProviderConfigError as exc:
         print(f"[AI Chat] 读取服务商配置失败：{exc}")
         names = []
-    return names or [DEFAULT_PROFILE["name"]]
+    # ComfyUI requires a nonempty dropdown at node-registration time; this
+    # sentinel is NOT a stored profile and can never resolve to an API key.
+    return names or ["请先配置服务商"]
 
 
 def model_choices(profile_name: str | None = None) -> list[str]:

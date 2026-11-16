@@ -4,12 +4,39 @@ import { api } from "../../scripts/api.js";
 const TARGET_NODES = new Set(["MultiModalAssistant", "GoogleNanoNode"]);
 const MANUAL_MODEL = "手动填写";
 let profileCache = [];
+let profilesLoaded = false;
 
 async function requestJson(path, options = {}) {
-    const response = await api.fetchApi(path, {
+    const method = (options.method || "GET").toUpperCase();
+    const requestOptions = {
         ...options,
-        headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-    });
+        cache: "no-store",
+        headers: {
+            ...(method === "GET" ? {} : { "Content-Type": "application/json" }),
+            ...(options.headers || {}),
+        },
+    };
+    let response;
+    try {
+        response = await api.fetchApi(path, requestOptions);
+    } catch (_error) {
+        // A second GET through the native fetch API can work on hosted
+        // ComfyUI deployments whose frontend fetch wrapper is unavailable.
+        // Never retry mutations: save/delete/clear-key must execute at most once.
+        if (method === "GET" && typeof api.apiURL === "function") {
+            try {
+                response = await fetch(api.apiURL(path), {
+                    ...requestOptions,
+                    credentials: "same-origin",
+                });
+            } catch (_fallbackError) {
+                // The path is safe to reveal; API credentials never appear here.
+            }
+        }
+        if (!response) {
+            throw new Error(`无法连接 ComfyUI 服务商接口（${path}）。请确认 ComfyUI 正在运行、插件已加载，并检查云端代理是否允许访问 /ai_chat/ 路径。`);
+        }
+    }
     let body = {};
     try {
         body = await response.json();
@@ -17,14 +44,19 @@ async function requestJson(path, options = {}) {
         body = {};
     }
     if (!response.ok) {
-        throw new Error(body.error || `请求失败（HTTP ${response.status}）`);
+        const reason = body.error || `请求失败（HTTP ${response.status}）`;
+        throw new Error(`${reason} [${path}]${response.status === 404 ? "；请重启 ComfyUI 并确认插件的配置接口已成功注册。" : ""}`);
     }
     return body;
 }
 
 async function loadProfiles() {
     const body = await requestJson("/ai_chat/profiles");
-    profileCache = Array.isArray(body.profiles) ? body.profiles : [];
+    if (!Array.isArray(body.profiles)) {
+        throw new Error("服务商接口返回的配置列表无效，未覆盖现有缓存。");
+    }
+    profileCache = body.profiles;
+    profilesLoaded = true;
     return profileCache;
 }
 
@@ -52,8 +84,8 @@ function modelValues(profile) {
 }
 
 async function syncAllNodes() {
-    const profiles = profileCache.length ? profileCache : await loadProfiles();
-    const names = profiles.map((profile) => profile.name);
+    const profiles = profilesLoaded ? profileCache : await loadProfiles();
+    const names = profiles.length ? profiles.map((profile) => profile.name) : ["请先配置服务商"];
     for (const node of app.graph?._nodes || []) {
         if (!TARGET_NODES.has(node.__aiChatNodeType)) continue;
         const providerWidget = findWidget(node, "服务商配置");
@@ -63,10 +95,10 @@ async function syncAllNodes() {
         const profile = profiles.find((item) => item.name === providerWidget?.value) || profiles[0];
         const modelWidget = findWidget(node, "选择模型");
         const values = modelValues(profile);
-        if (sameProvider && modelWidget?.value && !values.includes(modelWidget.value)) {
+        if (sameProvider && profile && modelWidget?.value && !values.includes(modelWidget.value)) {
             values.unshift(modelWidget.value);
         }
-        const preferredModel = sameProvider ? modelWidget?.value : profile?.default_model;
+        const preferredModel = sameProvider && profile ? modelWidget?.value : profile?.default_model;
         updateCombo(modelWidget, values, preferredModel);
         node.setDirtyCanvas?.(true, true);
     }
@@ -76,6 +108,11 @@ async function refreshNodeModels(node, forceRefresh) {
     const providerWidget = findWidget(node, "服务商配置");
     const profileName = providerWidget?.value;
     if (!profileName) throw new Error("请先选择服务商配置。");
+
+    await loadProfiles();
+    if (!profileCache.some((entry) => entry.name === profileName)) {
+        throw new Error("当前服务商配置已不存在，请先在管理服务商中保存配置。");
+    }
 
     if (forceRefresh) {
         await requestJson("/ai_chat/models/refresh", {
@@ -193,7 +230,13 @@ async function openProfileManager(sourceNode) {
         wrapper.append(makeElement("label", {}, label), control);
         return wrapper;
     }
-    main.append(field("已有配置", profileSelect));
+    const selectRow = makeElement("div", { className: "ai-chat-inline" });
+    const reloadButton = makeElement("button", {
+        className: "ai-chat-button", type: "button",
+        title: "重新从 ComfyUI 服务端读取配置",
+    }, "重新读取");
+    selectRow.append(profileSelect, reloadButton);
+    main.append(field("已有配置", selectRow));
     const newButton = makeElement("button", { className: "ai-chat-button", type: "button" }, "新建配置");
     main.append(newButton, field("配置名称", nameInput), field("Base URL", baseUrlInput));
 
@@ -244,12 +287,15 @@ async function openProfileManager(sourceNode) {
         clearKeyButton.disabled = !profile?.has_api_key;
         modelInput.value = profile?.default_model || "";
         allowHttpInput.checked = Boolean(profile?.allow_http);
-        deleteButton.disabled = !profile || profileCache.length <= 1;
+        deleteButton.disabled = !profile;
         updateWarning();
     }
 
     function renderSelect(preferredName = "") {
         profileSelect.replaceChildren();
+        if (profileCache.length === 0) {
+            profileSelect.append(makeElement("option", { value: "" }, "暂无已保存配置"));
+        }
         for (const profile of profileCache) {
             const option = makeElement("option", { value: profile.name }, profile.name);
             profileSelect.append(option);
@@ -260,7 +306,26 @@ async function openProfileManager(sourceNode) {
         fill(profileCache.find((profile) => profile.name === profileSelect.value));
     }
 
+    async function reloadProfiles(preferredName = "") {
+        setStatus("正在读取服务端配置……");
+        reloadButton.disabled = true;
+        try {
+            await loadProfiles();
+            renderSelect(preferredName);
+            await syncAllNodes();
+            setStatus(profileCache.length
+                ? `已读取 ${profileCache.length} 个服务商配置；真实 API Key 不会返回浏览器。`
+                : "当前没有保存的服务商配置，可以新建。");
+            return true;
+        } catch (error) {
+            setStatus(`${error.message}。配置仍可能保存在服务器上，请勿把空白列表误认为已删除。`, true);
+            return false;
+        } finally {
+            reloadButton.disabled = false;
+        }
+    }
     profileSelect.addEventListener("change", () => fill(profileCache.find((profile) => profile.name === profileSelect.value)));
+    reloadButton.addEventListener("click", () => reloadProfiles(profileSelect.value));
     baseUrlInput.addEventListener("input", updateWarning);
     closeButton.addEventListener("click", close);
     backdrop.addEventListener("click", (event) => { if (event.target === backdrop) close(); });
@@ -290,7 +355,7 @@ async function openProfileManager(sourceNode) {
                 apiKeyInput.placeholder = "请输入 API Key";
                 clearKeyButton.disabled = true;
             }
-            setStatus(`已清除“${name}”的 Key；旧版备份中的 Key 不受影响。`);
+            setStatus(`已清除“${name}”在当前 providers.json 中的 Key。历史备份和旧 config.json 不会自动删除。`);
         } catch (error) {
             setStatus(error.message, true);
         }
@@ -337,7 +402,7 @@ async function openProfileManager(sourceNode) {
 
     deleteButton.addEventListener("click", async () => {
         const name = profileSelect.value;
-        if (!name || !(await confirmAction("删除服务商配置", `确认删除服务商配置“${name}”？`))) return;
+        if (!name || !(await confirmAction("删除服务商配置", `确认删除“${name}”及当前文件中的 API Key？最后一个配置也可以删除；历史备份与旧 config.json 不会自动删除。`))) return;
         setStatus("正在删除……");
         try {
             await requestJson("/ai_chat/profiles/delete", {
@@ -347,7 +412,7 @@ async function openProfileManager(sourceNode) {
             await loadProfiles();
             renderSelect();
             await syncAllNodes();
-            setStatus("已删除。旧配置已由服务端备份。 ");
+            setStatus("已删除当前服务端配置。历史备份和旧 config.json 需要自行检查。");
         } catch (error) {
             setStatus(error.message, true);
         }
@@ -384,13 +449,9 @@ async function openProfileManager(sourceNode) {
         }
     });
 
-    try {
-        await loadProfiles();
-        renderSelect(findWidget(sourceNode, "服务商配置")?.value || "");
-        profileSelect.focus();
-    } catch (error) {
-        setStatus(error.message, true);
-    }
+    renderSelect();
+    await reloadProfiles(findWidget(sourceNode, "服务商配置")?.value || "");
+    profileSelect.focus();
 }
 
 app.registerExtension({
